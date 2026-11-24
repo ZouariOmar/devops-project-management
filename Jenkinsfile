@@ -24,7 +24,7 @@ pipeline {
 
         stage('Build Backend') {
             steps {
-                dir('backend') {
+                dir('project/backend') {
                     sh '''
                         chmod +x mvnw
                         ./mvnw clean package -DskipTests
@@ -35,7 +35,7 @@ pipeline {
 
         stage('Test Backend') {
             steps {
-                dir('backend') {
+                dir('project/backend') {
                     sh './mvnw test'
                 }
             }
@@ -43,19 +43,25 @@ pipeline {
 
         stage('Build Frontend') {
             steps {
-                dir('frontend') {
-                    sh '''
-                        npm install
-                        npm run build
-                    '''
+                dir('project/frontend') {
+                    sh 'npm r build'
                 }
             }
         }
 
+        stage('Test Frontend') {
+            steps {
+                dir('project/frontend') {
+                    sh 'npm r test'
+                }
+            }
+        }
+
+
         stage('Archive') {
             steps {
                 archiveArtifacts(
-                    artifacts: 'backend/target/*.jar',
+                    artifacts: 'project/backend/target/*.jar',
                     fingerprint: true
                 )
             }
