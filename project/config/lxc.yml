@@ -1,0 +1,37 @@
+architecture: x86_64
+config:
+  image.architecture: amd64
+  image.description: Alpine 3.24 (default)
+  image.os: Alpine
+  image.release: "3.24"
+  image.requirements.secureboot: "false"
+  image.serial: "20261117_0048"
+  image.type: squashfs
+  image.variant: default
+  security.privileged: "true"
+  volatile.base_image: 644ae562d51d6a2cce5c2cc2d815b47dd1d9d1e46bc3fe444fa4f5c3b8c4d33c
+  volatile.cloud-init.instance-id: 73a65f9f-b346-426f-b3fd-22f6b0ca2ef4
+  volatile.eth0.host_name: vethb230ad69
+  volatile.eth0.hwaddr: 00:16:3e:be:91:ac
+  volatile.idmap.base: "0"
+  volatile.idmap.current: '[]'
+  volatile.idmap.next: '[]'
+  volatile.last_state.idmap: '[]'
+  volatile.last_state.power: RUNNING
+  volatile.last_state.ready: "false"
+  volatile.uuid: b7b8180e-c427-4c31-8807-0299180c0ca4
+  volatile.uuid.generation: b7b8180e-c427-4c31-8807-0299180c0ca4
+devices:
+  eth0:
+    name: eth0
+    network: lxdbr0
+    type: nic
+  root:
+    path: /
+    pool: default
+    type: disk
+ephemeral: false
+profiles:
+- default
+stateful: false
+description: ""
