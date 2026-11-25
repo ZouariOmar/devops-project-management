@@ -6,12 +6,14 @@
 #   Project lifecycle commands
 #
 # .DESCRIPTION
-#   Builds, runs and cleans the K3s workloads and the Jenkins LXC container.
+#   Builds, starts, stops and cleans the K3s workloads and the Jenkins LXC
+#   container. Starting and stopping is safe to repeat.
 #   Reusable targets come from `res/mk/`.
 #
 # .USAGE
 #   make help
 #   make build
+#   make start | stop | restart
 #
 # .PARAMETER
 #   N/A
@@ -29,158 +31,144 @@
 #   Changelog     : e1e38b7
 # ==================================================================================
 include res/mk/colors.mk \
-	res/mk/settings.mk     \
-	res/mk/logging.mk      \
-	res/mk/versioning.mk   \
-  res/mk/envirement.mk   \
-	res/mk/fix.mk          \
+	res/mk/settings.mk      \
+	res/mk/logging.mk       \
+	res/mk/versioning.mk    \
+	res/mk/envirement.mk    \
+	res/mk/fix.mk           \
 	res/mk/help.mk
 
 # --- Configuration ---
-PROJECT_NAME          := devops-project-management## Project name
-SRC_DIR               := project## Source code directory
-SCRIPT_DIR            := $(SRC_DIR)/script## Script directory
-CONTAINER             := $(PROJECT_NAME)
-BACKUP_FILE           := $(SRC_DIR)/backup/$(CONTAINER).tar.gz
+PROJECT_NAME    := devops-project-management## Project name
+SRC_DIR         := project## Source code directory
+SCRIPT_DIR      := $(SRC_DIR)/script## Script directory
+CONTAINER       := $(PROJECT_NAME)## LXC container name
+CONTAINER_SHELL ?= /bin/sh## Shell available inside the container
+BACKUP_FILE     := $(SRC_DIR)/backup/$(CONTAINER).tar.gz## Container backup archive
+K8S_NAMESPACES  := monitoring database## Namespaces created by the project
+
+# --- Commands ---
+KUBECTL := sudo k3s kubectl
+
+# --- Utilities ---
+# `envirement.mk` exports everything, which would expand it without an argument
+unexport confirm
+
+# Prints RUNNING, STOPPED, or nothing if the container does not exist
+container_state = sudo lxc list '^$(CONTAINER)$$' --format csv --columns s
+
 # --- Targets ---
 
 ##@ General
 
-.PHONY: all
-all: run
+.PHONY: all build start stop restart status clean
+all: start
 
-.PHONY: build
-build: k8s-start k8s-init lxc-init ## Build the project
+build: k8s-start k8s-init lxc-init ## Build the project (first setup)
 
-.PHONY: run
-run: k8s-start lxc-start ## Run the project
+start: k8s-start lxc-start ## Start the project
 
-.PHONY: status
-status: k8s-status lxc-status ## Check project status
+stop: lxc-stop k8s-stop ## Stop the project
 
-.PHONY: clean
-clean: k8s-clean lxc-clean ## Clean the project
+restart: stop start ## Restart the project
+
+status: k8s-status lxc-status ## Check the project status
+
+clean: lxc-clean k8s-clean ## Delete the container and the namespaces
 
 ##@ Linux Container
 
-.PHONY: lxc-init
-lxc-init: ## Initialize the container
-	@$(LOG_INFO) "Initialize $(PROJECT_NAME)..."
+.PHONY: lxc-init lxc-start lxc-stop lxc-restart lxc-status lxc-shell lxc-logs lxc-export lxc-clean
+lxc-init: ## Create and provision the container
+	@$(LOG_INFO) "Initializing $(CONTAINER)..."
 	$(SCRIPT_DIR)/lxc/create
 
-.PHONY: lxc-start
 lxc-start: ## Start the container
-	@$(LOG_INFO) "Starting $(CONTAINER)..."
-	sudo lxc start $(CONTAINER)
+	@state=$$($(container_state));                              \
+	if [[ "$$state" == RUNNING ]]; then                         \
+		$(LOG_INFO) "$(CONTAINER) is already running.";           \
+	elif [[ -z "$$state" ]]; then                               \
+		$(LOG_ERROR) "$(CONTAINER) not found. Run 'make build'."; \
+		exit 1;                                                   \
+	else                                                        \
+		$(LOG_INFO) "Starting $(CONTAINER)...";                   \
+		sudo lxc start $(CONTAINER);                              \
+	fi
 
-.PHONY: lxc-stop
 lxc-stop: ## Stop the container
-	@$(LOG_INFO) "Stopping $(CONTAINER)..."
-	sudo lxc stop $(CONTAINER)
+	@state=$$($(container_state));                   \
+	if [[ "$$state" == RUNNING ]]; then              \
+		$(LOG_INFO) "Stopping $(CONTAINER)...";        \
+		sudo lxc stop $(CONTAINER);                    \
+	else                                             \
+		$(LOG_INFO) "$(CONTAINER) is not running.";    \
+	fi
 
-.PHONY: lxc-restart
+# Not a prerequisite list: `restart` already depends on `lxc-stop` and `lxc-start`
 lxc-restart: ## Restart the container
-	@$(LOG_INFO) "Restarting $(CONTAINER)..."
-	sudo lxc restart $(CONTAINER)
+	@$(MAKE) --no-print-directory lxc-stop
+	@$(MAKE) --no-print-directory lxc-start
 
-.PHONY: lxc-shell
-lxc-shell: ## Open an interactive shell inside the container
-	@$(LOG_INFO) "Connecting to $(CONTAINER)..."
-	sudo lxc exec $(CONTAINER) -- $(SHELL)
-
-.PHONY: lxc-export
-lxc-export: ## Export container backup archive
-	@$(LOG_INFO) "Exporting $(CONTAINER) to $(BACKUP_FILE)..."
-	sudo lxc export $(CONTAINER) $(BACKUP_FILE) --instance-only
-
-.PHONY: lxc-status
-lxc-status: ## Check container status
+lxc-status: ## Show the container details
 	@$(LOG_INFO) "$(CONTAINER) status..."
 	sudo lxc info $(CONTAINER)
 
-.PHONY: lxc-clean
-lxc-clean: ## Stop and delete the container, then remove any orphaned veth network interfaces
+lxc-shell: ## Open a shell inside the container
+	@$(LOG_INFO) "Connecting to $(CONTAINER)..."
+	sudo lxc exec $(CONTAINER) -- $(CONTAINER_SHELL)
+
+lxc-logs: ## Show the Jenkins publishing log (written on boot)
+	sudo lxc exec $(CONTAINER) -- cat /var/log/jenkins-publish.log
+
+lxc-export: ## Export a container backup (contains secrets)
+	@$(LOG_INFO) "Exporting $(CONTAINER) to $(BACKUP_FILE)..."
+	mkdir -p $(dir $(BACKUP_FILE))
+	sudo lxc export $(CONTAINER) $(BACKUP_FILE) --instance-only
+
+lxc-clean: ## Delete the container and orphaned veth interfaces
 	@$(LOG_INFO) "Cleaning $(CONTAINER)..."
 	ip -o link show type veth | awk -F': ' '/state DOWN/ {split($$2, a, "@"); print a[1]}' | xargs -r -n1 sudo ip link delete
-	@shopt -s nocasematch;                                                              \
-	read -ep $$'$(YELLOW)Delete container \'$(CONTAINER)\'? [y/N]...$(TEXT_RESET)' ans; \
-	if [[ "$$ans" =~ ^y(es)?$$ ]]; then                                                 \
-		sudo lxc delete -f $(CONTAINER);                                                  \
+	@if $(call confirm,Delete container $(CONTAINER)?); then \
+		sudo lxc delete -f $(CONTAINER);                       \
 	fi
 
-##@ K8s Workloads
+##@ K8s (K3s)
 
-.PHONY: k8s-init
-k8s-init: ## Initialize the k8s
-	@$(LOG_INFO) "Initialize $(PROJECT_NAME)..."
+K8S_SERVICE_TARGETS := k8s-start k8s-stop k8s-restart k8s-enable k8s-disable
+
+.PHONY: $(K8S_SERVICE_TARGETS) k8s-init k8s-status k8s-services k8s-logs k8s-clean
+k8s-init: ## Deploy the monitoring and database workloads
+	@$(LOG_INFO) "Initializing the K8s workloads..."
 	$(SCRIPT_DIR)/k8s/setup
 
-.PHONY: k8s-status
-k8s-status: ## Check Kubernetes cluster status
-	@$(LOG_INFO) "Checking Kubernetes cluster..."
-	sudo k3s kubectl get nodes
-	sudo k3s kubectl get namespaces
-	sudo k3s kubectl get pods -A
+# One shared recipe: the part after `k8s-` is the systemctl action
+k8s-start:   ## Start the K3s service
+k8s-stop:    ## Stop the K3s service
+k8s-restart: ## Restart the K3s service
+k8s-enable:  ## Start K3s at system startup
+k8s-disable: ## Do not start K3s at system startup
 
-.PHONY: k8s-services
-k8s-services: ## List all Kubernetes services
-	@$(LOG_INFO) "Listing Kubernetes services..."
-	sudo k3s kubectl get services -A
+$(K8S_SERVICE_TARGETS): k8s-%:
+	@$(LOG_INFO) "K3s service: $*..."
+	sudo systemctl $* k3s
 
-.PHONY: k8s-start
-k8s-start: ## Start K3s service
-	@$(LOG_INFO) "Starting K3s..."
-	sudo systemctl start k3s
-
-.PHONY: k8s-stop
-k8s-stop: ## Stop K3s service
-	@$(LOG_INFO) "Stopping K3s..."
-	sudo systemctl stop k3s
-
-.PHONY: k8s-restart
-k8s-restart: ## Restart K3s service
-	@$(LOG_INFO) "Restarting K3s..."
-	sudo systemctl restart k3s
-
-.PHONY: k8s-enable
-k8s-enable: ## Enable K3s at system startup
-	@$(LOG_INFO) "Enabling K3s..."
-	sudo systemctl enable k3s
-
-.PHONY: k8s-disable
-k8s-disable: ## Disable K3s at system startup
-	@$(LOG_INFO) "Disabling K3s..."
-	sudo systemctl disable k3s
-
-.PHONY: k8s-logs
-k8s-logs: ## Display K3s service logs
-	@$(LOG_INFO) "Displaying K3s logs..."
-	sudo journalctl -u k3s -f
-
-.PHONY: k8s-clean
-k8s-clean: ## Delete monitoring and database namespaces
-	@$(LOG_INFO) "Cleaning Kubernetes namespaces..."
-	@read -ep $$'$(YELLOW)Delete monitoring and database namespaces? [y/N]...$(TEXT_RESET)' ans; \
-	if [[ "$$ans" =~ ^y(es)?$$ ]]; then \
-		sudo k3s kubectl delete namespace monitoring database --ignore-not-found; \
+k8s-status: ## Show the K3s service, nodes, namespaces and pods
+	@$(LOG_INFO) "Checking the Kubernetes cluster..."
+	@if ! systemctl is-active --quiet k3s; then \
+		$(LOG_WARN) "K3s is not running.";        \
+	else                                        \
+		$(KUBECTL) get nodes;                     \
+		$(KUBECTL) get namespaces;                \
+		$(KUBECTL) get pods -A;                   \
 	fi
 
-##@ K3s Engine
+k8s-services: ## List all Kubernetes services
+	$(KUBECTL) get services -A
 
-k3s-start: ## Start the K3s service
-	@$(LOG_INFO) "Starting K3s service..."
-	sudo systemctl start k3s
+k8s-logs: ## Follow the K3s service logs
+	sudo journalctl -u k3s -f
 
-k3s-stop: ## Stop the K3s service
-	@$(LOG_INFO) "Stopping K3s service..."
-	sudo systemctl stop k3s
-
-k3s-restart: ## Restart the K3s service
-	@$(LOG_INFO) "Restarting K3s service..."
-	sudo systemctl restart k3s
-
-k3s-status: ## Check K3s service and node status
-	@$(LOG_INFO) "Checking K3s status..."
-	@sudo systemctl is-active k3s
-	@sudo k3s kubectl get nodes
-
+k8s-clean: ## Delete the project namespaces and their data
+	@if $(call confirm,Delete namespaces $(K8S_NAMESPACES) and their data?); then \
+		$(KUBECTL) delete namespace $(K8S_NAMESPACES) --ignore-not-found;           \
+	fi

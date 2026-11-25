@@ -51,3 +51,6 @@ node_modules
 
 # --- Env ---
 *.env
+
+# --- Container Backups (contain secrets) ---
+project/backup/

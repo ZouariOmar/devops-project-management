@@ -10,3 +10,4 @@ LOG_INFO    = echo -e "$(TEXT_DIM)[$(TIMESTAMP)]$(TEXT_RESET) $(TEXT_BOLD)$(CYAN
 LOG_SUCCESS = echo -e "$(TEXT_DIM)[$(TIMESTAMP)]$(TEXT_RESET) $(TEXT_BOLD)$(BR_GREEN)[SUCCESS]$(TEXT_RESET)"
 LOG_WARN    = echo -e "$(TEXT_DIM)[$(TIMESTAMP)]$(TEXT_RESET) $(TEXT_BOLD)$(YELLOW)[WARN]$(TEXT_RESET)"
 LOG_ERROR   = echo -e "$(TEXT_DIM)[$(TIMESTAMP)]$(TEXT_RESET) $(TEXT_BOLD)$(RED)[ERROR]$(TEXT_RESET)"
+confirm     = { read -r -p "$$(echo -e "$(YELLOW)$(1) [y/N] $(TEXT_RESET)")" ans && [[ "$$ans" =~ ^[Yy]([Ee][Ss])?$$ ]]; }

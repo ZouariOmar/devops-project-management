@@ -12,3 +12,4 @@ OS            = $(shell uname -s)
 MAKEFLAGS += --warn-undefined-variables
 MAKEFLAGS += --no-builtin-rules
 .SUFFIXES:
+.NOTPARALLEL:
