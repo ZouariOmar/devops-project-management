@@ -8,7 +8,7 @@
 #
 # .DESCRIPTION
 #   Installs the dependencies, creates the Linux user, installs the Jenkins
-#   plugins, starts Jenkins and publishes it with a Cloudflare Quick Tunnel.
+#   plugins, starts Jenkins and runs `jenkins-publish`, now and on every boot.
 #   POSIX sh: `create` pipes it into the Alpine container.
 #
 # .USAGE
@@ -24,7 +24,7 @@
 #   None.
 #
 # .OUTPUTS
-#   A running Jenkins and its public URL.
+#   A running, published Jenkins.
 #
 # .NOTES
 #   Version       : 1.0
@@ -75,7 +75,8 @@ install_dependencies() {
     nodejs \
     npm \
     jenkins \
-    curl
+    curl \
+    github-cli
 }
 
 # -----------------------------------------
@@ -266,86 +267,30 @@ wait_for_jenkins() {
 
 # -----------------------------------------
 # .FUNCTION
-#   start_cloudflare_tunnel
+#   enable_publish_on_boot
 # .SYNOPSIS
-#   Publish Jenkins through a Cloudflare Quick Tunnel
+#   Publish Jenkins again on every container boot
 # .DESCRIPTION
-#   Saves the public URL to /var/lib/jenkins/cloudflare-url.
+#   Uses the OpenRC `local` service. The output goes to
+#   /var/log/jenkins-publish.log.
 # .USAGE
-#   start_cloudflare_tunnel
+#   enable_publish_on_boot
 # .AUTHOR
 #   @ZouariOmar (zouariomar20@gmail.com)
 # .CREATED
-#   2026-11-24
+#   2026-11-25
 # -----------------------------------------
-start_cloudflare_tunnel() {
-  echo "Starting Cloudflare Quick Tunnel..."
+enable_publish_on_boot() {
+  echo "Enabling publishing on boot..."
 
-  LOG_FILE="/var/log/cloudflared-quick-tunnel.log"
-  PID_FILE="/run/cloudflared-quick-tunnel.pid"
-  URL_FILE="/var/lib/jenkins/cloudflare-url"
+  # Runs in the background so it never delays the boot
+  printf '%s\n' \
+    '#!/bin/sh' \
+    '/usr/local/bin/jenkins-publish >/var/log/jenkins-publish.log 2>&1 &' \
+    >/etc/local.d/jenkins-publish.start
 
-  # Launch a new Quick Tunnel.
-  nohup cloudflared tunnel \
-    --no-autoupdate \
-    --url http://127.0.0.1:8080 \
-    --protocol http2 \
-    >"$LOG_FILE" 2>&1 &
-
-  echo $! >"$PID_FILE"
-
-  echo "Waiting for Cloudflare to generate a public URL..."
-  URL=""
-
-  # Wait up to 120 seconds.
-  i=0
-  while [ "$i" -lt 60 ]; do
-    URL=$(
-      grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
-        "$LOG_FILE" | head -n 1 || true
-    )
-
-    if [ -n "$URL" ]; then
-      break
-    fi
-
-    # Detect premature process termination.
-    if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
-      echo "Cloudflare Tunnel process terminated unexpectedly."
-      tail -30 "$LOG_FILE"
-      return 1
-    fi
-
-    i=$((i + 1))
-    sleep 2
-  done
-
-  if [ -z "$URL" ]; then
-    echo "ERROR: Failed to obtain Cloudflare Quick Tunnel URL."
-    tail -30 "$LOG_FILE"
-    return 1
-  fi
-
-  # Save the generated URL.
-  printf '%s\n' "$URL" >"$URL_FILE"
-
-  cat <<BANNER
-    ==========================================
-              JENKINS IS PUBLISHED!
-    ==========================================
-
-      Public Jenkins URL:
-      $URL
-
-      Jenkins Login:
-      $URL/login
-
-      Tunnel PID:
-      $(cat "$PID_FILE")
-
-      Saved URL: $URL_FILE
-    ==========================================
-BANNER
+  chmod 755 /etc/local.d/jenkins-publish.start
+  rc-update add local default
 }
 
 # -----------------------------------------
@@ -368,7 +313,8 @@ main() {
   install_cloudflared
   start_jenkins
   wait_for_jenkins
-  start_cloudflare_tunnel
+  enable_publish_on_boot
+  /usr/local/bin/jenkins-publish
 
   echo "Linux and Jenkins setup completed for $USERNAME."
 }

@@ -22,6 +22,7 @@
 # .INPUTS
 #   Environment variables: CONTAINER_USER_PASSWORD, JENKINS_ADMIN_PASSWORD,
 #   MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE.
+#   Optional: GITHUB_TOKEN, GITHUB_REPOSITORY.
 #
 # .OUTPUTS
 #   A running LXC container and log messages.
@@ -49,6 +50,7 @@ SCRIPT_DIR=project/script
 
 LXC_CONFIG_FILE="$CONFIG_DIR"/lxd/container.yml
 LXC_SETUP_SCRIPT="$SCRIPT_DIR"/lxc/provision
+LXC_PUBLISH_SCRIPT="$SCRIPT_DIR"/lxc/publish
 
 # The numeric prefixes set the order Jenkins runs the init scripts in
 JENKINS_SECURITY_NAME=00-security.groovy
@@ -70,6 +72,11 @@ JENKINS_PLUGIN_LIST="$CONFIG_DIR/jenkins/plugins.yml"
 : "${JENKINS_ADMIN_USERNAME:=zouari}"
 : "${LXD_BRIDGE:=lxdbr0}"
 K8S_DATABASE_NAMESPACE=database
+
+# --- GitHub Webhook (skipped without a token) ---
+: "${GITHUB_TOKEN:=}"
+: "${GITHUB_REPOSITORY:=ZouariOmar/devops-project-management}"
+GITHUB_CONFIG=/root/.github-webhook
 
 # -----------------------------------------
 # .FUNCTION
@@ -150,6 +157,44 @@ discover_mysql_url() {
 
   MYSQL_URL="jdbc:mysql://${MYSQL_BRIDGE_IP}:${MYSQL_NODE_PORT}/${MYSQL_DATABASE}"
   msg SUCCESS "MySQL URL for Jenkins: ${MYSQL_URL}"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   check_github_token
+# .SYNOPSIS
+#   Check that the token can manage the webhooks
+# .DESCRIPTION
+#   Fails before the container is touched. The token goes to curl through stdin.
+# .USAGE
+#   check_github_token
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+check_github_token() {
+  if [[ -z "$GITHUB_TOKEN" ]]; then
+    msg WARNING "GITHUB_TOKEN is empty: the GitHub webhook will not be configured."
+    return 0
+  fi
+
+  msg INFO "Checking the GitHub token..."
+
+  local code
+  code=$(
+    printf 'Authorization: Bearer %s\n' "$GITHUB_TOKEN" |
+      curl -sS -o /dev/null -w '%{http_code}' -H @- \
+        "https://api.github.com/repos/${GITHUB_REPOSITORY}/hooks"
+  )
+
+  if [[ "$code" != 200 ]]; then
+    msg ERROR "GitHub returned HTTP ${code} for the webhooks of ${GITHUB_REPOSITORY}."
+    msg INFO "The token needs the 'Webhooks: Read and write' repository permission."
+    return 1
+  fi
+
+  msg SUCCESS "GitHub token accepted."
 }
 
 # -----------------------------------------
@@ -308,6 +353,32 @@ prepare_jenkins() {
 
 # -----------------------------------------
 # .FUNCTION
+#   prepare_publish
+# .SYNOPSIS
+#   Push the publishing script and GitHub settings
+# .USAGE
+#   prepare_publish
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+prepare_publish() {
+  msg INFO "Pushing the publishing script..."
+  sudo lxc file push --mode=0755 \
+    "$LXC_PUBLISH_SCRIPT" \
+    "$CONTAINER/usr/local/bin/jenkins-publish"
+
+  if [[ -n "$GITHUB_TOKEN" ]]; then
+    msg INFO "Pushing the GitHub webhook settings..."
+    printf '%s\n%s\n' "$GITHUB_TOKEN" "$GITHUB_REPOSITORY" |
+      sudo lxc exec "$CONTAINER" -- \
+        /bin/sh -c "umask 077 && cat >$GITHUB_CONFIG"
+  fi
+}
+
+# -----------------------------------------
+# .FUNCTION
 #   setup_container
 # .SYNOPSIS
 #   Run the provisioning script inside the container
@@ -377,7 +448,8 @@ verify_mysql() {
 #   2026-11-24
 # -----------------------------------------
 main() {
-  check_requirements lxd lxc ufw k3s ip
+  check_requirements lxd lxc ufw k3s ip curl
+  check_github_token
 
   # Checked first, so a missing database never costs the existing container
   wait_mysql
@@ -388,6 +460,7 @@ main() {
   create_container
   wait_ipv4
   prepare_jenkins
+  prepare_publish
   setup_container
   verify_mysql
 

@@ -1,0 +1,326 @@
+#!/usr/bin/env sh
+# ==================================================================================
+# .FILE
+#   publish
+#
+# .SYNOPSIS
+#   Publish Jenkins and point the GitHub webhook to it
+#
+# .DESCRIPTION
+#   Starts a Cloudflare Quick Tunnel, then creates or updates the GitHub push
+#   webhook with the new public URL. The URL changes on every start, so this runs
+#   during provisioning and on every container boot.
+#   Installed as /usr/local/bin/jenkins-publish. POSIX sh.
+#
+# .USAGE
+#   jenkins-publish
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   /root/.github-webhook (token, then owner/repository). Optional: without
+#   it, only the tunnel is started.
+#
+# .OUTPUTS
+#   The public URL in /var/lib/jenkins/cloudflare-url and the GitHub webhook.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-25
+#   Changelog     : ec43034
+# ==================================================================================
+set -eu
+
+JENKINS_URL="http://127.0.0.1:8080"
+TUNNEL_LOG="/var/log/cloudflared-quick-tunnel.log"
+TUNNEL_PID="/run/cloudflared-quick-tunnel.pid"
+URL_FILE="/var/lib/jenkins/cloudflare-url"
+GITHUB_CONFIG="/root/.github-webhook"
+
+# Matches only the webhooks this script manages
+HOOK_PATTERN='^https://[a-z0-9-]+[.]trycloudflare[.]com/github-webhook/$'
+
+# -----------------------------------------
+# .FUNCTION
+#   retry
+# .SYNOPSIS
+#   Run a command until it succeeds
+# .DESCRIPTION
+#   Makes 10 attempts, 3 seconds apart. Needed while the network comes up.
+# .USAGE
+#   retry <command> [args...]
+# .PARAMETER
+#   command
+#     Command to run.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+retry() {
+  attempt=1
+
+  until "$@"; do
+    [ "$attempt" -lt 10 ] || return 1
+    attempt=$((attempt + 1))
+    sleep 3
+  done
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   wait_for_jenkins
+# .SYNOPSIS
+#   Wait until the Jenkins login page answers
+# .DESCRIPTION
+#   Gives up after about 3 minutes.
+# .USAGE
+#   wait_for_jenkins
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+wait_for_jenkins() {
+  echo "Waiting for Jenkins..."
+
+  i=0
+  until curl -fsS "$JENKINS_URL/login" >/dev/null 2>&1; do
+    i=$((i + 1))
+
+    if [ "$i" -ge 90 ]; then
+      echo "ERROR: Jenkins did not answer."
+      return 1
+    fi
+
+    sleep 2
+  done
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   start_tunnel
+# .SYNOPSIS
+#   Start a Cloudflare Quick Tunnel
+# .DESCRIPTION
+#   Replaces a tunnel that is already running. Sets PUBLIC_URL and saves it.
+# .USAGE
+#   start_tunnel
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+start_tunnel() {
+  echo "Starting Cloudflare Quick Tunnel..."
+
+  if [ -f "$TUNNEL_PID" ]; then
+    kill "$(cat "$TUNNEL_PID")" 2>/dev/null || true
+  fi
+
+  nohup cloudflared tunnel \
+    --no-autoupdate \
+    --url "$JENKINS_URL" \
+    --protocol http2 \
+    >"$TUNNEL_LOG" 2>&1 &
+
+  echo $! >"$TUNNEL_PID"
+
+  PUBLIC_URL=""
+
+  # Wait up to 120 seconds
+  i=0
+  while [ "$i" -lt 60 ]; do
+    PUBLIC_URL=$(
+      grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "$TUNNEL_LOG" |
+        grep -v '//api\.' | head -n 1
+    ) || true
+
+    [ -z "$PUBLIC_URL" ] || break
+
+    if ! kill -0 "$(cat "$TUNNEL_PID")" 2>/dev/null; then
+      break
+    fi
+
+    i=$((i + 1))
+    sleep 2
+  done
+
+  if [ -z "$PUBLIC_URL" ]; then
+    tail -n 30 "$TUNNEL_LOG"
+    return 1
+  fi
+
+  printf '%s\n' "$PUBLIC_URL" >"$URL_FILE"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   list_webhooks
+# .SYNOPSIS
+#   List the IDs of the webhooks managed by this script
+# .USAGE
+#   list_webhooks
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+list_webhooks() {
+  gh api --paginate "repos/$REPOSITORY/hooks" \
+    --jq ".[] | select(.config.url // \"\" | test(\"$HOOK_PATTERN\")) | .id"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   save_webhook
+# .SYNOPSIS
+#   Create or update a push webhook
+# .DESCRIPTION
+#   Prints the webhook ID.
+# .USAGE
+#   save_webhook <method> <endpoint> <url> [args...]
+# .PARAMETER
+#   method
+#     POST to create, PATCH to update.
+#   endpoint
+#     GitHub API path.
+#   url
+#     Payload URL.
+#   args
+#     Extra `gh api` arguments.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+save_webhook() {
+  method="$1"
+  endpoint="$2"
+  payload_url="$3"
+  shift 3
+
+  gh api --method "$method" "$endpoint" "$@" \
+    -f "config[url]=$payload_url" \
+    -f "config[content_type]=json" \
+    -f "config[insecure_ssl]=0" \
+    -f "events[]=push" \
+    -F "active=true" \
+    --jq '.id'
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   configure_webhook
+# .SYNOPSIS
+#   Point the GitHub webhook to the public URL
+# .DESCRIPTION
+#   Updates the first managed webhook, or creates one. Webhooks with other
+#   URLs are never changed.
+# .USAGE
+#   configure_webhook
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+configure_webhook() {
+  if [ ! -s "$GITHUB_CONFIG" ]; then
+    echo "WARNING: No GitHub token. The webhook was not configured."
+    return 0
+  fi
+
+  # Read from the file so the token never appears in process arguments
+  GH_TOKEN=$(sed -n '1p' "$GITHUB_CONFIG")
+  REPOSITORY=$(sed -n '2p' "$GITHUB_CONFIG")
+  export GH_TOKEN
+
+  echo "Configuring the GitHub webhook of $REPOSITORY..."
+
+  if ! hooks=$(retry list_webhooks); then
+    echo "ERROR: Cannot list the webhooks. Check the token and repository."
+    return 1
+  fi
+
+  hook_id=$(printf '%s\n' "$hooks" | head -n 1)
+
+  if [ -n "$hook_id" ]; then
+    save_webhook PATCH "repos/$REPOSITORY/hooks/$hook_id" \
+      "$PUBLIC_URL/github-webhook/" >/dev/null
+  else
+    hook_id=$(
+      save_webhook POST "repos/$REPOSITORY/hooks" \
+        "$PUBLIC_URL/github-webhook/" -f "name=web"
+    )
+  fi
+
+  echo "GitHub webhook configured: $PUBLIC_URL/github-webhook/"
+  verify_webhook "$hook_id"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   verify_webhook
+# .SYNOPSIS
+#   Ping the webhook and report the response
+# .DESCRIPTION
+#   Only warns on failure: a new tunnel hostname can take a while to resolve.
+# .USAGE
+#   verify_webhook <id>
+# .PARAMETER
+#   id
+#     Webhook ID.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+verify_webhook() {
+  i=0
+
+  while [ "$i" -lt 6 ]; do
+    sleep 5
+    gh api --method POST "repos/$REPOSITORY/hooks/$1/pings" >/dev/null 2>&1 || true
+    sleep 5
+
+    code=$(gh api "repos/$REPOSITORY/hooks/$1" --jq '.last_response.code' 2>/dev/null) || code=""
+
+    if [ "$code" = "200" ]; then
+      echo "GitHub reached Jenkins successfully."
+      return 0
+    fi
+
+    i=$((i + 1))
+  done
+
+  echo "WARNING: GitHub has not reached Jenkins yet (last code: ${code:-none})."
+  echo "Check Settings > Webhooks > Recent Deliveries on GitHub."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   main
+# .SYNOPSIS
+#   Publish Jenkins and configure the webhook
+# .USAGE
+#   main
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+main() {
+  wait_for_jenkins
+
+  if ! retry start_tunnel; then
+    echo "ERROR: Failed to obtain a Cloudflare Quick Tunnel URL."
+    exit 1
+  fi
+
+  echo "Public Jenkins URL: $PUBLIC_URL"
+  configure_webhook
+}
+
+main
