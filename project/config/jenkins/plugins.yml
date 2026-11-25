@@ -1,0 +1,18 @@
+plugins:
+  # Git integration
+  - artifactId: git
+  - artifactId: github
+  - artifactId: github-branch-source
+
+  # Pipeline
+  - artifactId: workflow-aggregator
+  - artifactId: pipeline-stage-view
+
+  # Credentials
+  - artifactId: credentials
+  - artifactId: credentials-binding
+
+  # Build utilities
+  - artifactId: timestamper
+  - artifactId: ws-cleanup
+  - artifactId: junit
