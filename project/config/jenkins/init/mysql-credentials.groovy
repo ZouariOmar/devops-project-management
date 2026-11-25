@@ -1,3 +1,31 @@
+// =================================================================================
+// .FILE
+//   mysql-credentials.groovy
+//
+// .SYNOPSIS
+//   Configure the MySQL credentials and URL
+//
+// .DESCRIPTION
+//   Creates or updates the `mysql-credentials` entry and the global MYSQL_URL
+//   variable, then deletes the secrets file. Skips if the file is missing.
+//   Runs as `01-mysql-credentials.groovy`.
+//
+// .PARAMETER
+//   N/A
+//
+// .INPUTS
+//   /var/lib/jenkins/mysql.credentials (user, password, URL).
+//
+// .OUTPUTS
+//   Jenkins credential and global environment variable.
+//
+// .NOTES
+//   Version       : 1.0
+//   Author        : @ZouariOmar (zouariomar20@gmail.com)
+//   Created       : 2026-11-25
+//   Changelog     : e1e38b7
+// =================================================================================
+
 import jenkins.model.Jenkins
 import com.cloudbees.plugins.credentials.CredentialsScope
 import com.cloudbees.plugins.credentials.SystemCredentialsProvider

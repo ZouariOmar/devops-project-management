@@ -1,3 +1,30 @@
+# ==================================================================================
+# .FILE
+#   mysql.yml
+#
+# .SYNOPSIS
+#   MySQL Services and StatefulSet
+#
+# .DESCRIPTION
+#   Applied by `k8s/setup`, which substitutes MYSQL_PORT (the NodePort)
+#   with envsubst. Needs the `mysql-admin` Secret.
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   None.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-25
+#   Changelog     : e1e38b7
+# ==================================================================================
+
 apiVersion: v1
 kind: Service
 metadata:

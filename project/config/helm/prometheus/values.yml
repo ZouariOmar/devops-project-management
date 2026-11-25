@@ -1,0 +1,61 @@
+# ==================================================================================
+# .FILE
+#   values.yml
+#
+# .SYNOPSIS
+#   Prometheus Helm chart values
+#
+# .DESCRIPTION
+#   Used by `k8s/setup`.
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   None.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-25
+#   Changelog     : e1e38b7
+# ==================================================================================
+
+server:
+  enabled: true
+
+  persistentVolume:
+    enabled: true
+    size: 8Gi
+
+  retention: "15d"
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+
+  service:
+    type: ClusterIP
+    servicePort: 80
+
+alertmanager:
+  enabled: true
+
+  persistentVolume:
+    enabled: false
+
+pushgateway:
+  enabled: false
+
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true

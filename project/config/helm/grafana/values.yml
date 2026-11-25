@@ -1,3 +1,29 @@
+# ==================================================================================
+# .FILE
+#   values.yml
+#
+# .SYNOPSIS
+#   Grafana Helm chart values
+#
+# .DESCRIPTION
+#   Used by `k8s/setup`. Needs the `grafana-admin` Secret.
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   None.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-25
+#   Changelog     : e1e38b7
+# ==================================================================================
+
 replicas: 1
 
 admin:

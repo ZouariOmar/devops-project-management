@@ -1,3 +1,29 @@
+# ==================================================================================
+# .FILE
+#   plugins.yml
+#
+# .SYNOPSIS
+#   Jenkins plugin list
+#
+# .DESCRIPTION
+#   Installed by `lxc/provision` with the Plugin Installation Manager.
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   None.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-25
+#   Changelog     : e1e38b7
+# ==================================================================================
+
 plugins:
   # Git integration
   - artifactId: git

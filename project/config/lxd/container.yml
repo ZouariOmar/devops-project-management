@@ -1,3 +1,29 @@
+# ==================================================================================
+# .FILE
+#   container.yml
+#
+# .SYNOPSIS
+#   LXC instance configuration
+#
+# .DESCRIPTION
+#   Passed to `lxc launch` by `lxc/create`.
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   None.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-24
+#   Changelog     : e1e38b7
+# ==================================================================================
+
 architecture: x86_64
 config:
   image.architecture: amd64

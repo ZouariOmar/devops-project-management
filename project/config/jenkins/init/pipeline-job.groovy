@@ -1,3 +1,31 @@
+// =================================================================================
+// .FILE
+//   pipeline-job.groovy
+//
+// .SYNOPSIS
+//   Create the project pipeline job
+//
+// .DESCRIPTION
+//   Creates or updates the pipeline job that reads `Jenkinsfile` from GitHub,
+//   and schedules a first build for a new job.
+//   Runs as `02-pipeline-job.groovy`.
+//
+// .PARAMETER
+//   N/A
+//
+// .INPUTS
+//   None.
+//
+// .OUTPUTS
+//   Jenkins pipeline job.
+//
+// .NOTES
+//   Version       : 1.0
+//   Author        : @ZouariOmar (zouariomar20@gmail.com)
+//   Created       : 2026-11-24
+//   Changelog     : e1e38b7
+// =================================================================================
+
 import jenkins.model.Jenkins
 import org.jenkinsci.plugins.workflow.job.WorkflowJob
 import org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition

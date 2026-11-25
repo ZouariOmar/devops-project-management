@@ -1,3 +1,30 @@
+# ==================================================================================
+# .FILE
+#   preseed.yml
+#
+# .SYNOPSIS
+#   LXD daemon configuration
+#
+# .DESCRIPTION
+#   Network, storage pool and default profile. No script uses it; apply it
+#   manually with `lxd init --preseed`.
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   None.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-24
+#   Changelog     : e1e38b7
+# ==================================================================================
+
 config:
   volatile.uuid: 01a1eb8a-4249-726f-8682-2ad5f99008cd
 networks:

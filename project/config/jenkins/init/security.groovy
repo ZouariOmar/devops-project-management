@@ -1,3 +1,32 @@
+// =================================================================================
+// .FILE
+//   security.groovy
+//
+// .SYNOPSIS
+//   Configure Jenkins authentication and authorization
+//
+// .DESCRIPTION
+//   Creates the administrator account, disables anonymous read access and
+//   deletes the temporary credentials file.
+//   Runs as `00-security.groovy`. It runs on every start and logs a missing
+//   credentials error once the file has been deleted.
+//
+// .PARAMETER
+//   N/A
+//
+// .INPUTS
+//   /var/lib/jenkins/jenkins-admin.credentials
+//
+// .OUTPUTS
+//   Jenkins security settings.
+//
+// .NOTES
+//   Version       : 1.0
+//   Author        : @ZouariOmar (zouariomar20@gmail.com)
+//   Created       : 2026-11-24
+//   Changelog     : e1e38b7
+// =================================================================================
+
 import jenkins.model.Jenkins
 import hudson.security.HudsonPrivateSecurityRealm
 import hudson.security.FullControlOnceLoggedInAuthorizationStrategy
