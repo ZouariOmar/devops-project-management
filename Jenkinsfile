@@ -14,10 +14,6 @@ pipeline {
         githubPush()
     }
 
-    environment {
-        MYSQL_URL = "${MYSQL_URL}"
-    }
-
     stages {
 
         stage('Checkout') {
@@ -61,7 +57,10 @@ pipeline {
         stage('Build Frontend') {
             steps {
                 dir('project/frontend') {
-                    sh 'npm r build'
+                    sh '''
+                        npm ci
+                        npm run build
+                    '''
                 }
             }
         }
@@ -69,7 +68,7 @@ pipeline {
         stage('Test Frontend') {
             steps {
                 dir('project/frontend') {
-                    sh 'npm r test'
+                    sh 'npm test -- --watch=false'
                 }
             }
         }
