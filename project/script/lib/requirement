@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# ==================================================================================
+# .FILE
+#   requirement
+#
+# .SYNOPSIS
+#   Prerequisite validation
+#
+# .DESCRIPTION
+#   Checks that the required commands are installed before a script changes
+#   anything. Needs `logger`.
+#
+# .USAGE
+#   . project/script/lib/requirement
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   Log messages on stdout/stderr.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-17
+#   Changelog     : e1e38b7
+# ==================================================================================
+set -Eeuo pipefail
+
+# -----------------------------------------
+# .FUNCTION
+#   check_command
+# .SYNOPSIS
+#   Verify that a command is installed
+# .DESCRIPTION
+#   Exits with status 1 if the command is not on PATH.
+# .USAGE
+#   check_command <command>
+# .PARAMETER
+#   command
+#     Command name.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-17
+# -----------------------------------------
+check_command() {
+  local cmd="$1"
+
+  if ! command -v "$cmd" &>/dev/null; then
+    msg ERROR "Required command not found: '$cmd'"
+    msg INFO "Install '$cmd' and re-run"
+    exit 1
+  fi
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   check_requirements
+# .SYNOPSIS
+#   Verify a list of commands
+# .DESCRIPTION
+#   Exits on the first missing command.
+# .USAGE
+#   check_requirements <command...>
+# .PARAMETER
+#   command
+#     One or more command names.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-17
+# -----------------------------------------
+check_requirements() {
+  msg INFO "Checking prerequisites..."
+
+  local cmd
+  for cmd in "$@"; do
+    check_command "$cmd"
+  done
+
+  msg SUCCESS "All prerequisites satisfied: $*"
+}

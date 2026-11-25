@@ -1,0 +1,438 @@
+#!/usr/bin/env bash
+# ==================================================================================
+# .FILE
+#   setup
+#
+# .SYNOPSIS
+#   Set up the K3s monitoring and database workloads
+#
+# .DESCRIPTION
+#   Configures kubectl and Helm for K3s, then deploys Prometheus and Grafana
+#   in the `monitoring` namespace and MySQL in the `database` namespace.
+#   Run it from the repository root.
+#
+# .USAGE
+#   make k8s-init
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   Environment variables: GRAFANA_ADMIN_PASSWORD, MYSQL_ROOT_PASSWORD,
+#   MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD, MYSQL_PORT.
+#
+# .OUTPUTS
+#   K8s resources and log messages.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-24
+#   Changelog     : e1e38b7
+# ==================================================================================
+set -Eeuo pipefail
+trap 'msg ERROR "Unexpected error at line $LINENO: $BASH_COMMAND"' ERR
+
+# --- Required Variables ---
+: "${GRAFANA_ADMIN_PASSWORD:?Missing Grafana administrator password}"
+
+: "${MYSQL_ROOT_PASSWORD:?Missing MySQL root password}"
+: "${MYSQL_DATABASE:?Missing MySQL database}"
+: "${MYSQL_USER:?Missing MySQL usename}"
+: "${MYSQL_PASSWORD:?Missing MySQL user password}"
+: "${MYSQL_PORT:?Missing MySQL port password}"
+
+# --- Directories & Files ---
+LIB_DIR=project/script/lib
+CONFIG_DIR=project/config
+HELM_VALUE_DIR="$CONFIG_DIR"/helm
+K8S_CONFIG_DIR="$CONFIG_DIR"/k8s
+
+PROMETHEUS_VALUES_FILE="$HELM_VALUE_DIR"/prometheus/values.yml
+GRAFANA_VALUES_FILE="$HELM_VALUE_DIR"/grafana/values.yml
+MYSQL_K8S_FILE="$K8S_CONFIG_DIR"/mysql.yml
+
+# --- K8s & User Configuration ---
+K8S_MONITORING_NAMESPACE=monitoring
+K8S_DATABASE_NAMESPACE=database
+# K8S_GRAFANA_PORT=3000
+
+# -----------------------------------------
+# .FUNCTION
+#   check_k8s
+# .SYNOPSIS
+#   Configure and verify Kubernetes access
+# .DESCRIPTION
+#   Installs the K3s kubeconfig for the current user if it is missing, exports
+#   KUBECONFIG and checks that kubectl and Helm can reach the cluster.
+# .USAGE
+#   check_k8s
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+check_k8s() {
+  local K3S_CONFIG="/etc/rancher/k3s/k3s.yaml"
+  local USER_KUBECONFIG="${HOME}/.kube/config"
+
+  msg INFO "Configuring Kubernetes access..."
+
+  # Verify K3s kubeconfig exists
+  if ! sudo test -s "${K3S_CONFIG}"; then
+    msg ERROR "K3s configuration is missing or empty: ${K3S_CONFIG}"
+    return 1
+  fi
+
+  # Create user's kubeconfig directory
+  mkdir -p "${HOME}/.kube"
+
+  # Check whether user's kubeconfig already exists
+  if [[ ! -s "${USER_KUBECONFIG}" ]]; then
+    msg INFO "Installing K3s kubeconfig..."
+
+    sudo install \
+      -m 600 \
+      -o "${USER}" \
+      -g "$(id -gn)" \
+      "${K3S_CONFIG}" \
+      "${USER_KUBECONFIG}"
+  else
+    msg INFO "Kubeconfig already exists: ${USER_KUBECONFIG}"
+  fi
+
+  # Verify kubeconfig permissions and ownership
+  if [[ ! -r "${USER_KUBECONFIG}" ]]; then
+    msg ERROR "Kubeconfig is not readable: ${USER_KUBECONFIG}"
+    return 1
+  fi
+
+  # Export Kubernetes configuration
+  export KUBECONFIG="${USER_KUBECONFIG}"
+
+  # Verify exported variable
+  if [[ "${KUBECONFIG}" != "${USER_KUBECONFIG}" ]]; then
+    msg ERROR "KUBECONFIG environment variable is incorrectly configured."
+    return 1
+  fi
+
+  msg SUCCESS "KUBECONFIG exported: ${KUBECONFIG}"
+
+  # Verify Kubernetes connectivity
+  msg INFO "Checking Kubernetes connectivity..."
+
+  if ! kubectl cluster-info; then
+    msg ERROR "Kubernetes cluster is unreachable."
+    return 1
+  fi
+
+  # Verify Helm connectivity
+  msg INFO "Checking Helm connectivity..."
+
+  if ! helm list -A; then
+    msg ERROR "Helm cannot connect to Kubernetes."
+    return 1
+  fi
+
+  msg SUCCESS "Kubernetes and Helm connectivity verified."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   create_namespace
+# .SYNOPSIS
+#   Create a namespace if it does not exist
+# .USAGE
+#   create_namespace <namespace>
+# .PARAMETER
+#   namespace
+#     Namespace to create.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+create_namespace() {
+  local NAMESPACE="$1"
+
+  msg INFO "Creating namespace ${NAMESPACE}..."
+
+  kubectl create namespace "${NAMESPACE}" \
+    --dry-run=client -o yaml |
+    kubectl apply -f -
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   setup_helm_repositories
+# .SYNOPSIS
+#   Add and update the Prometheus and Grafana Helm repositories
+# .USAGE
+#   setup_helm_repositories
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+setup_helm_repositories() {
+  msg INFO "Configuring Helm repositories..."
+
+  # Add `prometheus-community` Helm repository
+  # Source: https://artifacthub.io/packages/helm/prometheus-community/prometheus
+  helm repo add prometheus-community \
+    https://prometheus-community.github.io/helm-charts \
+    --force-update
+
+  # Add `grafana-community` Helm repository
+  # Source: https://artifacthub.io/packages/helm/grafana-community/grafana
+  helm repo add grafana-community \
+    https://grafana.github.io/helm-charts \
+    --force-update
+
+  helm repo update
+  msg SUCCESS "Helm repositories configured."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   install_prometheus
+# .SYNOPSIS
+#   Install or upgrade Prometheus with Helm
+# .USAGE
+#   install_prometheus
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+install_prometheus() {
+  msg INFO "Configure Prometheus"
+
+  local CHART="prometheus-community/prometheus"
+
+  # Deploy Prometheus
+  msg INFO "Deploying Prometheus..."
+
+  helm upgrade --install prometheus "${CHART}" \
+    --namespace "${K8S_MONITORING_NAMESPACE}" \
+    --values "${PROMETHEUS_VALUES_FILE}" \
+    --wait \
+    --timeout 5m
+
+  msg SUCCESS "Prometheus installed successfully."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   install_grafana
+# .SYNOPSIS
+#   Install or upgrade Grafana with Helm
+# .DESCRIPTION
+#   Creates or updates the `grafana-admin` Secret first.
+# .USAGE
+#   install_grafana
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+install_grafana() {
+  msg INFO "Configure Grafana"
+
+  local CHART="grafana-community/grafana"
+
+  # Create or update Grafana administrator Secret
+  msg INFO "Configuring Grafana administrator Secret..."
+
+  kubectl create secret generic grafana-admin \
+    --namespace "${K8S_MONITORING_NAMESPACE}" \
+    --from-literal=admin-user=admin \
+    --from-literal=admin-password="${GRAFANA_ADMIN_PASSWORD}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+  # Deploy Grafana
+  msg INFO "Deploying Grafana..."
+
+  helm upgrade --install grafana "${CHART}" \
+    --namespace "${K8S_MONITORING_NAMESPACE}" \
+    --values "${GRAFANA_VALUES_FILE}" \
+    --wait \
+    --timeout 5m
+
+  msg SUCCESS "Grafana installed successfully."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   setup_monitoring_space
+# .SYNOPSIS
+#   Set up the monitoring namespace, Prometheus and Grafana
+# .USAGE
+#   setup_monitoring_space
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+setup_monitoring_space() {
+  # Create `monitoring` namespace
+  create_namespace "${K8S_MONITORING_NAMESPACE}"
+
+  # Install Prometheus & Grafana
+  install_prometheus
+  install_grafana
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   install_mysql
+# .SYNOPSIS
+#   Deploy the MySQL StatefulSet
+# .DESCRIPTION
+#   Creates or updates the `mysql-admin` Secret, applies the manifest and waits
+#   for MySQL to become ready.
+# .USAGE
+#   install_mysql
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+install_mysql() {
+  msg INFO "Configure MySQL"
+
+  msg INFO "Configuring MySQL credentials Secret..."
+  kubectl create secret generic mysql-admin \
+    --namespace "${K8S_DATABASE_NAMESPACE}" \
+    --from-literal=MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD}" \
+    --from-literal=MYSQL_DATABASE="${MYSQL_DATABASE}" \
+    --from-literal=MYSQL_USER="${MYSQL_USER}" \
+    --from-literal=MYSQL_PASSWORD="${MYSQL_PASSWORD}" \
+    --dry-run=client -o yaml |
+    kubectl apply -f -
+
+  msg INFO "Deploying official MySQL StatefulSet..."
+  # shellcheck disable=SC2016
+  envsubst '${MYSQL_PORT}' <"${MYSQL_K8S_FILE}" |
+    kubectl apply -f -
+
+  msg INFO "Waiting for MySQL readiness..."
+  kubectl rollout status statefulset/mysql \
+    --namespace "${K8S_DATABASE_NAMESPACE}" \
+    --timeout=5m
+
+  msg SUCCESS "Official MySQL StatefulSet deployed successfully."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   get_mysql_url
+# .SYNOPSIS
+#   Export MYSQL_URL using the node IP
+# .DESCRIPTION
+#   The export only lasts while this script runs. Jenkins gets its URL from
+#   `lxc/create`.
+# .USAGE
+#   get_mysql_url
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+get_mysql_url() {
+  msg INFO "Discovering MySQL connection URL..."
+
+  local NODE_IP
+
+  NODE_IP=$(
+    kubectl get nodes \
+      -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}'
+  )
+
+  if [[ -z "${NODE_IP}" ]]; then
+    msg ERROR "Unable to retrieve Kubernetes node IP."
+    return 1
+  fi
+
+  if ! kubectl get service mysql -n "${K8S_DATABASE_NAMESPACE}" >/dev/null 2>&1; then
+    msg ERROR "MySQL service does not exist."
+    return 1
+  fi
+
+  MYSQL_URL="jdbc:mysql://${NODE_IP}:${MYSQL_PORT}/${MYSQL_DATABASE}"
+  export MYSQL_URL
+
+  msg SUCCESS "MySQL URL discovered: ${MYSQL_URL}"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   setup_database_space
+# .SYNOPSIS
+#   Set up the database namespace and MySQL
+# .USAGE
+#   setup_database_space
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+setup_database_space() {
+  # Create `database` namespace
+  create_namespace "${K8S_DATABASE_NAMESPACE}"
+
+  install_mysql
+  get_mysql_url
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   main
+# .SYNOPSIS
+#   Run the full Kubernetes setup
+# .USAGE
+#   main
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+main() {
+  check_requirements kubectl helm k3s
+  check_k8s
+
+  setup_helm_repositories
+  setup_monitoring_space
+  setup_database_space
+
+  msg INFO "Retrieving Kubernetes services..."
+  kubectl get services -A
+  kubectl get pods -A
+
+  msg SUCCESS "Kubernetes initialization completed."
+}
+
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+if [[ -s "${LIB_DIR}/common" ]]; then
+  # shellcheck disable=SC1091
+  . "${LIB_DIR}/common"
+else
+  echo "[ERROR] Missing: ${LIB_DIR}/common" >&2
+  exit 1
+fi
+load_script "${LIB_DIR}/logger"
+load_script "${LIB_DIR}/requirement"
+
+# Source: https://patorjk.com/software/taag/#p=display&f=ANSI+Shadow&t=k8s+init&x=none&v=4&h=4&w=80&we=false
+cat <<'BANNER'
+██╗  ██╗ █████╗ ███████╗    ██╗███╗   ██╗██╗████████╗
+██║ ██╔╝██╔══██╗██╔════╝    ██║████╗  ██║██║╚══██╔══╝
+█████╔╝ ╚█████╔╝███████╗    ██║██╔██╗ ██║██║   ██║
+██╔═██╗ ██╔══██╗╚════██║    ██║██║╚██╗██║██║   ██║
+██║  ██╗╚█████╔╝███████║    ██║██║ ╚████║██║   ██║
+╚═╝  ╚═╝ ╚════╝ ╚══════╝    ╚═╝╚═╝  ╚═══╝╚═╝   ╚═╝
+BANNER
+
+main

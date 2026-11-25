@@ -1,0 +1,420 @@
+#!/usr/bin/env bash
+# ==================================================================================
+# .FILE
+#   create
+#
+# .SYNOPSIS
+#   Create the Jenkins LXC container
+#
+# .DESCRIPTION
+#   Waits for MySQL, creates an Alpine container, pushes the Jenkins
+#   configuration with the MySQL URL and credentials, runs `provision` inside
+#   it and checks that Jenkins can reach MySQL.
+#   Asks before deleting a container with the same name.
+#   Run it from the repository root.
+#
+# .USAGE
+#   make lxc-init
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   Environment variables: CONTAINER_USER_PASSWORD, JENKINS_ADMIN_PASSWORD,
+#   MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE.
+#
+# .OUTPUTS
+#   A running LXC container and log messages.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-24
+#   Changelog     : e1e38b7
+# ==================================================================================
+set -Eeuo pipefail
+trap 'msg ERROR "Unexpected error at line $LINENO: $BASH_COMMAND"' ERR
+
+# --- Required Variables ---
+: "${CONTAINER_USER_PASSWORD:?Missing Linux user password}"
+: "${JENKINS_ADMIN_PASSWORD:?Missing Jenkins administrator password}"
+: "${MYSQL_USER:?Missing MySQL username}"
+: "${MYSQL_PASSWORD:?Missing MySQL user password}"
+: "${MYSQL_DATABASE:?Missing MySQL database}"
+
+# --- Directories & Files ---
+LIB_DIR=project/script/lib
+CONFIG_DIR=project/config
+SCRIPT_DIR=project/script
+
+LXC_CONFIG_FILE="$CONFIG_DIR"/lxd/container.yml
+LXC_SETUP_SCRIPT="$SCRIPT_DIR"/lxc/provision
+
+# The numeric prefixes set the order Jenkins runs the init scripts in
+JENKINS_SECURITY_NAME=00-security.groovy
+JENKINS_SECURITY_SCRIPT="$CONFIG_DIR/jenkins/init/security.groovy"
+
+JENKINS_MYSQL_NAME=01-mysql-credentials.groovy
+JENKINS_MYSQL_SCRIPT="$CONFIG_DIR/jenkins/init/mysql-credentials.groovy"
+JENKINS_MYSQL_SECRETS=/var/lib/jenkins/mysql.credentials
+
+JENKINS_PROJECT_JOB_NAME=02-pipeline-job.groovy
+JENKINS_PROJECT_JOB="$CONFIG_DIR/jenkins/init/pipeline-job.groovy"
+
+JENKINS_PLUGIN_LIST="$CONFIG_DIR/jenkins/plugins.yml"
+
+# --- Container & User Configuration ---
+: "${CONTAINER:=devops-project-management}"
+: "${CONTAINER_SHELL:=/bin/sh}"
+: "${CONTAINER_USERNAME:=zouari}"
+: "${JENKINS_ADMIN_USERNAME:=zouari}"
+: "${LXD_BRIDGE:=lxdbr0}"
+K8S_DATABASE_NAMESPACE=database
+
+# -----------------------------------------
+# .FUNCTION
+#   kube
+# .SYNOPSIS
+#   Run kubectl in the database namespace
+# .USAGE
+#   kube <args...>
+# .PARAMETER
+#   args
+#     kubectl arguments.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+kube() {
+  sudo k3s kubectl --namespace "${K8S_DATABASE_NAMESPACE}" "$@"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   wait_mysql
+# .SYNOPSIS
+#   Wait for the MySQL StatefulSet to be ready
+# .USAGE
+#   wait_mysql
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+wait_mysql() {
+  msg INFO "Waiting for MySQL..."
+
+  if ! kube get statefulset mysql >/dev/null; then
+    msg ERROR "MySQL StatefulSet not found. Run 'make k8s-init' first."
+    return 1
+  fi
+
+  kube rollout status statefulset/mysql --timeout=5m
+  msg SUCCESS "MySQL is ready."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   discover_mysql_url
+# .SYNOPSIS
+#   Build the JDBC URL that the container can reach
+# .DESCRIPTION
+#   The container reaches the host, and so the NodePort, through the LXD bridge.
+#   `127.0.0.1` would point to the container itself.
+#   Sets MYSQL_URL, MYSQL_BRIDGE_IP and MYSQL_NODE_PORT.
+# .USAGE
+#   discover_mysql_url
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+discover_mysql_url() {
+  MYSQL_BRIDGE_IP=$(
+    ip -4 -o addr show "${LXD_BRIDGE}" |
+      awk '{split($4, a, "/"); print a[1]; exit}'
+  )
+
+  if [[ -z "$MYSQL_BRIDGE_IP" ]]; then
+    msg ERROR "No IPv4 address found on ${LXD_BRIDGE}."
+    return 1
+  fi
+
+  MYSQL_NODE_PORT=$(kube get service mysql-nodeport -o jsonpath='{.spec.ports[0].nodePort}')
+
+  if [[ -z "$MYSQL_NODE_PORT" ]]; then
+    msg ERROR "No NodePort found on service 'mysql-nodeport'."
+    return 1
+  fi
+
+  MYSQL_URL="jdbc:mysql://${MYSQL_BRIDGE_IP}:${MYSQL_NODE_PORT}/${MYSQL_DATABASE}"
+  msg SUCCESS "MySQL URL for Jenkins: ${MYSQL_URL}"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   check_container
+# .SYNOPSIS
+#   Handle an existing container
+# .DESCRIPTION
+#   Asks whether to delete and recreate it. Aborts the setup otherwise.
+# .USAGE
+#   check_container
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+check_container() {
+  if sudo lxc info "$CONTAINER" >/dev/null 2>&1; then
+    msg WARNING "Container ${CONTAINER} already exists!"
+
+    read -rp "Delete and recreate container ${CONTAINER}? [y/N]: " ans
+
+    if [[ "$ans" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+      sudo lxc delete -f "$CONTAINER"
+    else
+      msg INFO "Aborting setup."
+      exit 1
+    fi
+  fi
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   configure_firewall
+# .SYNOPSIS
+#   Allow LXD bridge traffic through ufw
+# .USAGE
+#   configure_firewall
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+configure_firewall() {
+  msg INFO "Configuring LXD firewall rules..."
+
+  sudo ufw allow in on lxdbr0
+  sudo ufw route allow in on lxdbr0
+  sudo ufw route allow out on lxdbr0
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   create_container
+# .SYNOPSIS
+#   Launch the Alpine container
+# .USAGE
+#   create_container
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+create_container() {
+  msg INFO "Available Alpine container images..."
+  sudo lxc image list images: type=container alpine/3.24
+
+  msg INFO "Creating container ${CONTAINER}..."
+  sudo cat "${LXC_CONFIG_FILE}" | sudo lxc launch images:alpine/3.24 "${CONTAINER}"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   wait_ipv4
+# .SYNOPSIS
+#   Wait for the container to get an IPv4 address
+# .DESCRIPTION
+#   Gives up after 30 seconds.
+# .USAGE
+#   wait_ipv4
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+wait_ipv4() {
+  local TIMEOUT=30
+  local ELAPSED=0
+  msg INFO "Waiting for ${CONTAINER} to obtain an IPv4 address..."
+
+  while true; do
+    IPV4=$(sudo lxc list "^${CONTAINER}$" --format csv -c 4 | awk '{print $1}')
+    if [[ -n "${IPV4}" ]]; then
+      msg SUCCESS "Container ${CONTAINER} acquired IP: ${IPV4}"
+      break
+    fi
+
+    if ((ELAPSED >= TIMEOUT)); then
+      msg ERROR "Timed out waiting for ${CONTAINER} to get an IP address."
+      exit 1
+    fi
+
+    sleep 1
+    ((++ELAPSED))
+  done
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   prepare_jenkins
+# .SYNOPSIS
+#   Push the Jenkins init scripts and plugin list
+# .USAGE
+#   prepare_jenkins
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+prepare_jenkins() {
+  msg INFO "Preparing Jenkins initialization..."
+
+  local init_dir="/var/lib/jenkins/init.groovy.d"
+
+  sudo lxc exec "$CONTAINER" -- \
+    mkdir -p "$init_dir"
+
+  msg INFO "Pushing Jenkins security initialization script..."
+  sudo lxc file push \
+    "$JENKINS_SECURITY_SCRIPT" \
+    "$CONTAINER$init_dir/$JENKINS_SECURITY_NAME"
+
+  msg INFO "Pushing Jenkins MySQL initialization script..."
+  sudo lxc file push \
+    "$JENKINS_MYSQL_SCRIPT" \
+    "$CONTAINER$init_dir/$JENKINS_MYSQL_NAME"
+
+  # Sent through stdin so the password never appears in process arguments
+  msg INFO "Pushing MySQL credentials..."
+  printf '%s\n%s\n%s\n' "$MYSQL_USER" "$MYSQL_PASSWORD" "$MYSQL_URL" |
+    sudo lxc exec "$CONTAINER" -- \
+      /bin/sh -c "umask 077 && cat >$JENKINS_MYSQL_SECRETS"
+
+  msg INFO "Pushing Jenkins project job initialization script..."
+  sudo lxc file push \
+    "$JENKINS_PROJECT_JOB" \
+    "$CONTAINER$init_dir/$JENKINS_PROJECT_JOB_NAME"
+
+  msg INFO "Pushing Jenkins plugin list..."
+  sudo lxc file push \
+    "$JENKINS_PLUGIN_LIST" \
+    "$CONTAINER/tmp/jenkins-plugins.yml"
+
+  msg SUCCESS "Jenkins initialization scripts pushed."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   setup_container
+# .SYNOPSIS
+#   Run the provisioning script inside the container
+# .USAGE
+#   setup_container
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+setup_container() {
+  msg INFO "Setting up container..."
+
+  sudo cat "$LXC_SETUP_SCRIPT" |
+    sudo lxc exec "$CONTAINER" -- \
+      /bin/sh -s -- \
+      "$CONTAINER_USERNAME" \
+      "$CONTAINER_USER_PASSWORD" \
+      "$JENKINS_ADMIN_USERNAME" \
+      "$JENKINS_ADMIN_PASSWORD"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   verify_mysql
+# .SYNOPSIS
+#   Check that Jenkins applied the settings and can reach MySQL
+# .DESCRIPTION
+#   The Jenkins init script deletes the secrets file once it succeeds.
+# .USAGE
+#   verify_mysql
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-25
+# -----------------------------------------
+verify_mysql() {
+  msg INFO "Verifying the Jenkins MySQL configuration..."
+
+  local i=0
+  while sudo lxc exec "$CONTAINER" -- test -f "$JENKINS_MYSQL_SECRETS"; do
+    if ((++i > 60)); then
+      msg ERROR "Jenkins did not apply the MySQL configuration. Check the Jenkins log."
+      return 1
+    fi
+    sleep 2
+  done
+
+  if ! sudo lxc exec "$CONTAINER" -- nc -z -w 5 "$MYSQL_BRIDGE_IP" "$MYSQL_NODE_PORT"; then
+    msg ERROR "${CONTAINER} cannot reach ${MYSQL_BRIDGE_IP}:${MYSQL_NODE_PORT}. Check your firewall."
+    return 1
+  fi
+
+  msg SUCCESS "Jenkins is configured and can reach MySQL."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   main
+# .SYNOPSIS
+#   Run the full container creation
+# .USAGE
+#   main
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+main() {
+  check_requirements lxd lxc ufw k3s ip
+
+  # Checked first, so a missing database never costs the existing container
+  wait_mysql
+  discover_mysql_url
+
+  check_container
+  configure_firewall
+  create_container
+  wait_ipv4
+  prepare_jenkins
+  setup_container
+  verify_mysql
+
+  msg SUCCESS "Container ${CONTAINER} setup completed!"
+}
+
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+if [[ -s "${LIB_DIR}/common" ]]; then
+  # shellcheck disable=SC1091
+  . "${LIB_DIR}/common"
+else
+  echo "[ERROR] Missing: ${LIB_DIR}/common" >&2
+  exit 1
+fi
+load_script "${LIB_DIR}/logger"
+load_script "${LIB_DIR}/requirement"
+
+# Source: https://patorjk.com/software/taag/#p=display&f=ANSI+Shadow&t=devops-project-management%0ABy+Zouari+Omar&x=none&v=4&h=4&w=80&we=false
+cat <<'BANNER'
+██╗      ██████╗    ██╗███╗   ██╗██╗████████╗
+██║     ██╔════╝    ██║████╗  ██║██║╚══██╔══╝
+██║     ██║         ██║██╔██╗ ██║██║   ██║
+██║     ██║         ██║██║╚██╗██║██║   ██║
+███████╗╚██████╗    ██║██║ ╚████║██║   ██║
+╚══════╝ ╚═════╝    ╚═╝╚═╝  ╚═══╝╚═╝   ╚═╝
+BANNER
+
+main

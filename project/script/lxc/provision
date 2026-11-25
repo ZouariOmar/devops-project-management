@@ -1,0 +1,376 @@
+#!/usr/bin/env sh
+# ==================================================================================
+# .FILE
+#   provision
+#
+# .SYNOPSIS
+#   Provision Jenkins inside the container
+#
+# .DESCRIPTION
+#   Installs the dependencies, creates the Linux user, installs the Jenkins
+#   plugins, starts Jenkins and publishes it with a Cloudflare Quick Tunnel.
+#   POSIX sh: `create` pipes it into the Alpine container.
+#
+# .USAGE
+#   provision <user> <password> <jenkins_user> <jenkins_password>
+#
+# .PARAMETER
+#   user, password
+#     Linux account to create.
+#   jenkins_user, jenkins_password
+#     Jenkins administrator account.
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   A running Jenkins and its public URL.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-24
+#   Changelog     : e1e38b7
+# ==================================================================================
+set -eu
+
+USERNAME="${1:?Missing Linux username}"
+LINUX_PASSWORD="${2:?Missing Linux password}"
+JENKINS_ADMIN_USERNAME="${3:?Missing Jenkins administrator username}"
+JENKINS_ADMIN_PASSWORD="${4:?Missing Jenkins administrator password}"
+
+JENKINS_HOME="/var/lib/jenkins"
+JENKINS_WAR="/usr/share/webapps/jenkins/jenkins.war"
+JENKINS_PLUGIN_DIR="$JENKINS_HOME/plugins"
+
+JENKINS_PLUGIN_MANAGER_VERSION="2.16.0"
+JENKINS_PLUGIN_MANAGER_URL="https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/${JENKINS_PLUGIN_MANAGER_VERSION}/jenkins-plugin-manager-${JENKINS_PLUGIN_MANAGER_VERSION}.jar"
+JENKINS_PLUGIN_MANAGER="/usr/local/bin/jenkins-plugin-manager.jar"
+JENKINS_PLUGIN_LIST="/tmp/jenkins-plugins.yml"
+
+JENKINS_CREDENTIALS="$JENKINS_HOME/jenkins-admin.credentials"
+JENKINS_URL="http://localhost:8080"
+
+# -----------------------------------------
+# .FUNCTION
+#   install_dependencies
+# .SYNOPSIS
+#   Install the required Alpine packages
+# .DESCRIPTION
+#   Maven is not installed: the backend ships its own `mvnw`.
+# .USAGE
+#   install_dependencies
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+install_dependencies() {
+  echo "Installing dependencies..."
+
+  apk update
+  apk add --no-cache \
+    git \
+    openjdk25-jdk \
+    nodejs \
+    npm \
+    jenkins \
+    curl
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   create_linux_user
+# .SYNOPSIS
+#   Create the Linux user and add it to the jenkins group
+# .USAGE
+#   create_linux_user
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+create_linux_user() {
+  echo "Creating Linux user..."
+
+  if ! id "$USERNAME" >/dev/null 2>&1; then
+    adduser -D -s /bin/sh "$USERNAME"
+  fi
+
+  printf '%s:%s\n' "$USERNAME" "$LINUX_PASSWORD" | chpasswd
+
+  addgroup "$USERNAME" jenkins 2>/dev/null || true
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   prepare_jenkins
+# .SYNOPSIS
+#   Set up the Jenkins init scripts and credential files
+# .USAGE
+#   prepare_jenkins
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+prepare_jenkins() {
+  echo "Preparing Jenkins..."
+
+  chown -R jenkins:jenkins \
+    "$JENKINS_HOME/init.groovy.d"
+
+  chmod 644 "$JENKINS_HOME/init.groovy.d/"*.groovy
+
+  # Create administrator credentials
+  echo "Creating Jenkins administrator credentials..."
+
+  umask 077
+
+  printf '%s\n%s\n' \
+    "$JENKINS_ADMIN_USERNAME" \
+    "$JENKINS_ADMIN_PASSWORD" \
+    >"$JENKINS_CREDENTIALS"
+
+  chown jenkins:jenkins "$JENKINS_CREDENTIALS"
+  chmod 600 "$JENKINS_CREDENTIALS"
+
+  # Pushed by `create`, consumed by `mysql-credentials.groovy`
+  chown jenkins:jenkins "$JENKINS_HOME/mysql.credentials"
+  chmod 600 "$JENKINS_HOME/mysql.credentials"
+
+  echo "Jenkins configuration completed."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   install_jenkins_plugins
+# .SYNOPSIS
+#   Install the plugins listed in the plugin file
+# .USAGE
+#   install_jenkins_plugins
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+install_jenkins_plugins() {
+  echo "Installing Jenkins Plugin Installation Manager..."
+
+  curl -fsSL "$JENKINS_PLUGIN_MANAGER_URL" \
+    -o "$JENKINS_PLUGIN_MANAGER"
+
+  if [ ! -f "$JENKINS_WAR" ]; then
+    echo "Jenkins WAR not found: $JENKINS_WAR"
+    exit 1
+  fi
+
+  if [ ! -f "$JENKINS_PLUGIN_LIST" ]; then
+    echo "Jenkins plugin list not found: $JENKINS_PLUGIN_LIST"
+    exit 1
+  fi
+
+  mkdir -p "$JENKINS_PLUGIN_DIR"
+
+  echo "Installing Jenkins plugins and dependencies..."
+
+  java -jar "$JENKINS_PLUGIN_MANAGER" \
+    --war "$JENKINS_WAR" \
+    --plugin-file "$JENKINS_PLUGIN_LIST" \
+    --plugin-download-directory "$JENKINS_PLUGIN_DIR"
+
+  chown -R jenkins:jenkins "$JENKINS_PLUGIN_DIR"
+
+  echo "Jenkins plugins installed successfully."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   install_cloudflared
+# .SYNOPSIS
+#   Install the Cloudflare Tunnel client
+# .USAGE
+#   install_cloudflared
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+install_cloudflared() {
+  echo "Installing Cloudflare Tunnel..."
+  ARCH=amd64
+
+  curl -fsSL \
+    "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}" \
+    -o /usr/local/bin/cloudflared
+  chmod 755 /usr/local/bin/cloudflared
+  cloudflared --version
+
+  echo "Cloudflare Tunnel installed successfully."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   start_jenkins
+# .SYNOPSIS
+#   Enable and start the Jenkins service
+# .USAGE
+#   start_jenkins
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+start_jenkins() {
+  echo "Starting Jenkins..."
+
+  rc-update add jenkins default
+  rc-service jenkins start
+
+  echo "Jenkins started."
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   wait_for_jenkins
+# .SYNOPSIS
+#   Wait until the Jenkins login page answers
+# .DESCRIPTION
+#   Gives up after 60 attempts.
+# .USAGE
+#   wait_for_jenkins
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+wait_for_jenkins() {
+  echo "Waiting for Jenkins..."
+
+  i=0
+
+  while [ "$i" -lt 60 ]; do
+    if curl -fsS "$JENKINS_URL/login" >/dev/null 2>&1; then
+      echo "Jenkins is ready!"
+      return 0
+    fi
+
+    i=$((i + 1))
+    echo "Waiting... ($i/60)"
+    sleep 2
+  done
+
+  echo "Jenkins failed to start."
+  exit 1
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   start_cloudflare_tunnel
+# .SYNOPSIS
+#   Publish Jenkins through a Cloudflare Quick Tunnel
+# .DESCRIPTION
+#   Saves the public URL to /var/lib/jenkins/cloudflare-url.
+# .USAGE
+#   start_cloudflare_tunnel
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+start_cloudflare_tunnel() {
+  echo "Starting Cloudflare Quick Tunnel..."
+
+  LOG_FILE="/var/log/cloudflared-quick-tunnel.log"
+  PID_FILE="/run/cloudflared-quick-tunnel.pid"
+  URL_FILE="/var/lib/jenkins/cloudflare-url"
+
+  # Launch a new Quick Tunnel.
+  nohup cloudflared tunnel \
+    --no-autoupdate \
+    --url http://127.0.0.1:8080 \
+    --protocol http2 \
+    >"$LOG_FILE" 2>&1 &
+
+  echo $! >"$PID_FILE"
+
+  echo "Waiting for Cloudflare to generate a public URL..."
+  URL=""
+
+  # Wait up to 120 seconds.
+  i=0
+  while [ "$i" -lt 60 ]; do
+    URL=$(
+      grep -Eo 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' \
+        "$LOG_FILE" | head -n 1 || true
+    )
+
+    if [ -n "$URL" ]; then
+      break
+    fi
+
+    # Detect premature process termination.
+    if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+      echo "Cloudflare Tunnel process terminated unexpectedly."
+      tail -30 "$LOG_FILE"
+      return 1
+    fi
+
+    i=$((i + 1))
+    sleep 2
+  done
+
+  if [ -z "$URL" ]; then
+    echo "ERROR: Failed to obtain Cloudflare Quick Tunnel URL."
+    tail -30 "$LOG_FILE"
+    return 1
+  fi
+
+  # Save the generated URL.
+  printf '%s\n' "$URL" >"$URL_FILE"
+
+  cat <<BANNER
+    ==========================================
+              JENKINS IS PUBLISHED!
+    ==========================================
+
+      Public Jenkins URL:
+      $URL
+
+      Jenkins Login:
+      $URL/login
+
+      Tunnel PID:
+      $(cat "$PID_FILE")
+
+      Saved URL: $URL_FILE
+    ==========================================
+BANNER
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   main
+# .SYNOPSIS
+#   Run the full provisioning
+# .USAGE
+#   main <user> <password> <jenkins_user> <jenkins_password>
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-24
+# -----------------------------------------
+main() {
+  install_dependencies
+  create_linux_user
+  prepare_jenkins
+  install_jenkins_plugins
+  install_cloudflared
+  start_jenkins
+  wait_for_jenkins
+  start_cloudflare_tunnel
+
+  echo "Linux and Jenkins setup completed for $USERNAME."
+}
+
+main "$@"

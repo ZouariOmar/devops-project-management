@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# ==================================================================================
+# .FILE
+#   common
+#
+# .SYNOPSIS
+#   Common utility functions
+#
+# .DESCRIPTION
+#   Shared helpers used by the project lifecycle scripts to load libraries,
+#   run scripts and validate variables.
+#   Load `logger` before calling any function that logs.
+#
+# .USAGE
+#   . project/script/lib/common
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   None.
+#
+# .OUTPUTS
+#   Log messages on stdout/stderr.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-17
+#   Changelog     : e1e38b7
+# ==================================================================================
+# shellcheck disable=SC1090
+set -Eeuo pipefail
+
+# -----------------------------------------
+# .FUNCTION
+#   load_script
+# .SYNOPSIS
+#   Source a Bash library file
+# .DESCRIPTION
+#   Sources the library and exits with an error if it is missing or empty.
+# .USAGE
+#   load_script <path>
+# .PARAMETER
+#   path
+#     Library file to source.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-17
+# -----------------------------------------
+load_script() {
+  local script="$1"
+
+  if [[ ! -s "$script" ]]; then
+    if declare -f msg &>/dev/null; then
+      msg ERROR "Missing script: '$script'"
+    else
+      echo "[ERROR] Missing script: '$script'" >&2
+    fi
+    exit 1
+  fi
+
+  # shellcheck disable=SC1090
+  . "$script"
+
+  msg SUCCESS "Loaded: '$script'"
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   run_script
+# .SYNOPSIS
+#   Execute a script and propagate its exit code
+# .DESCRIPTION
+#   Validates the script with `check_script`, runs it with the given arguments
+#   and exits if it fails.
+# .USAGE
+#   run_script <path> [args...]
+# .PARAMETER
+#   path
+#     Executable script to run.
+#   args
+#     Arguments passed to the script.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-17
+# -----------------------------------------
+run_script() {
+  local script="$1"
+  shift
+
+  check_script "$script"
+
+  msg INFO "Running: $script $*"
+  "$script" "$@"
+
+  local status=$?
+  if [[ $status -ne 0 ]]; then
+    msg ERROR "Script failed: '$script' (exit code: $status)"
+    exit "$status"
+  fi
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   check_script
+# .SYNOPSIS
+#   Assert that a script exists and is executable
+# .USAGE
+#   check_script <path>
+# .PARAMETER
+#   path
+#     Script to check.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-17
+# -----------------------------------------
+check_script() {
+  local script="$1"
+
+  if [[ -z "$script" ]]; then
+    msg ERROR "check_script: path argument is empty"
+    exit 1
+  fi
+
+  if [[ ! -f "$script" ]]; then
+    msg ERROR "Script not found: '$script'"
+    exit 1
+  fi
+
+  if [[ ! -x "$script" ]]; then
+    msg ERROR "Script is not executable: '$script'"
+    msg INFO "Run: chmod +x '$script'"
+    exit 1
+  fi
+}
+
+# -----------------------------------------
+# .FUNCTION
+#   require_variable
+# .SYNOPSIS
+#   Assert that a variable is set and non-empty
+# .USAGE
+#   require_variable <name>
+# .PARAMETER
+#   name
+#     Name of the variable, without `$`.
+# .AUTHOR
+#   @ZouariOmar (zouariomar20@gmail.com)
+# .CREATED
+#   2026-11-17
+# -----------------------------------------
+require_variable() {
+  local name="$1"
+  local value="${!name:-}"
+
+  if [[ -z "$value" ]]; then
+    msg ERROR "Required variable '\$${name}' is not set or empty"
+    exit 1
+  fi
+}
