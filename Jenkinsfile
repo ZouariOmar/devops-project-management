@@ -15,7 +15,7 @@ pipeline {
     }
 
     environment {
-        DB_URL = "${DB_URL}"
+        MYSQL_URL = "${MYSQL_URL}"
     }
 
     stages {
@@ -43,13 +43,13 @@ pipeline {
                     withCredentials([
                         usernamePassword(
                             credentialsId: 'mysql-credentials',
-                            usernameVariable: 'DB_USER',
-                            passwordVariable: 'DB_PASSWORD'
+                            usernameVariable: 'MYSQL_USER',
+                            passwordVariable: 'MYSQL_PASSWORD'
                         )
                     ]) {
                         sh '''
                             echo "Running backend tests..."
-                            echo "Database: $DB_URL"
+                            echo "Database: $MYSQL_URL"
 
                             ./mvnw test
                         '''
