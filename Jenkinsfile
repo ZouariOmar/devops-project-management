@@ -1,3 +1,33 @@
+// =================================================================================
+// .FILE
+//   Jenkinsfile
+//
+// .SYNOPSIS
+//   CI pipeline of the project
+//
+// .DESCRIPTION
+//   Builds and tests the Spring Boot backend and the Angular frontend, then
+//   archives the backend JAR.
+//
+// .USAGE
+//   Run by the Jenkins pipeline job.
+//
+// .PARAMETER
+//   N/A
+//
+// .INPUTS
+//   Jenkins credential `mysql-credentials` and variable MYSQL_URL.
+//
+// .OUTPUTS
+//   Build status and the archived JAR.
+//
+// .NOTES
+//   Version       : 1.0
+//   Author        : @ZouariOmar (zouariomar20@gmail.com)
+//   Created       : 2026-11-24
+//   Changelog     : e1e38b7
+// =================================================================================
+
 pipeline {
     agent any
 

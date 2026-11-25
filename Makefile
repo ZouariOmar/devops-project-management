@@ -1,8 +1,33 @@
-# =========================================================
-# devops-project-management makefile
-# CREATED: 2026-11-18 00:16
-# UPDATED: 2026-11-18 00:16
-# =========================================================
+# ==================================================================================
+# .FILE
+#   Makefile
+#
+# .SYNOPSIS
+#   Project lifecycle commands
+#
+# .DESCRIPTION
+#   Builds, runs and cleans the K3s workloads and the Jenkins LXC container.
+#   Reusable targets come from `res/mk/`.
+#
+# .USAGE
+#   make help
+#   make build
+#
+# .PARAMETER
+#   N/A
+#
+# .INPUTS
+#   project/.env, created from project/.env.example if missing.
+#
+# .OUTPUTS
+#   Depends on the target.
+#
+# .NOTES
+#   Version       : 1.0
+#   Author        : @ZouariOmar (zouariomar20@gmail.com)
+#   Created       : 2026-11-18
+#   Changelog     : e1e38b7
+# ==================================================================================
 include res/mk/colors.mk \
 	res/mk/settings.mk     \
 	res/mk/logging.mk      \
@@ -25,25 +50,23 @@ BACKUP_FILE           := $(SRC_DIR)/backup/$(CONTAINER).tar.gz
 all: run
 
 .PHONY: build
-build: lxc-init k8s-init ## Build the project
+build: k8s-start k8s-init lxc-init ## Build the project
 
 .PHONY: run
-run: lxc-start ## Run the project
+run: k8s-start lxc-start ## Run the project
 
 .PHONY: status
-status: lxc-status ## Check project status
+status: k8s-status lxc-status ## Check project status
 
 .PHONY: clean
-clean: lxc-clean ## Clean the project
-	@$(LOG_INFO) "Cleaning $(PROJECT_NAME)..."
-	rm -f $(BACKUP_FILE)
+clean: k8s-clean lxc-clean ## Clean the project
 
 ##@ Linux Container
 
 .PHONY: lxc-init
 lxc-init: ## Initialize the container
 	@$(LOG_INFO) "Initialize $(PROJECT_NAME)..."
-	$(SCRIPT_DIR)/00_lc_init
+	$(SCRIPT_DIR)/lxc/create
 
 .PHONY: lxc-start
 lxc-start: ## Start the container
@@ -90,7 +113,57 @@ lxc-clean: ## Stop and delete the container, then remove any orphaned veth netwo
 .PHONY: k8s-init
 k8s-init: ## Initialize the k8s
 	@$(LOG_INFO) "Initialize $(PROJECT_NAME)..."
-	$(SCRIPT_DIR)/00_k8s_init
+	$(SCRIPT_DIR)/k8s/setup
+
+.PHONY: k8s-status
+k8s-status: ## Check Kubernetes cluster status
+	@$(LOG_INFO) "Checking Kubernetes cluster..."
+	sudo k3s kubectl get nodes
+	sudo k3s kubectl get namespaces
+	sudo k3s kubectl get pods -A
+
+.PHONY: k8s-services
+k8s-services: ## List all Kubernetes services
+	@$(LOG_INFO) "Listing Kubernetes services..."
+	sudo k3s kubectl get services -A
+
+.PHONY: k8s-start
+k8s-start: ## Start K3s service
+	@$(LOG_INFO) "Starting K3s..."
+	sudo systemctl start k3s
+
+.PHONY: k8s-stop
+k8s-stop: ## Stop K3s service
+	@$(LOG_INFO) "Stopping K3s..."
+	sudo systemctl stop k3s
+
+.PHONY: k8s-restart
+k8s-restart: ## Restart K3s service
+	@$(LOG_INFO) "Restarting K3s..."
+	sudo systemctl restart k3s
+
+.PHONY: k8s-enable
+k8s-enable: ## Enable K3s at system startup
+	@$(LOG_INFO) "Enabling K3s..."
+	sudo systemctl enable k3s
+
+.PHONY: k8s-disable
+k8s-disable: ## Disable K3s at system startup
+	@$(LOG_INFO) "Disabling K3s..."
+	sudo systemctl disable k3s
+
+.PHONY: k8s-logs
+k8s-logs: ## Display K3s service logs
+	@$(LOG_INFO) "Displaying K3s logs..."
+	sudo journalctl -u k3s -f
+
+.PHONY: k8s-clean
+k8s-clean: ## Delete monitoring and database namespaces
+	@$(LOG_INFO) "Cleaning Kubernetes namespaces..."
+	@read -ep $$'$(YELLOW)Delete monitoring and database namespaces? [y/N]...$(TEXT_RESET)' ans; \
+	if [[ "$$ans" =~ ^y(es)?$$ ]]; then \
+		sudo k3s kubectl delete namespace monitoring database --ignore-not-found; \
+	fi
 
 ##@ K3s Engine
 
