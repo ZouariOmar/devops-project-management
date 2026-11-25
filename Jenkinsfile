@@ -11,7 +11,11 @@ pipeline {
     }
 
     triggers {
-        pollSCM('H/2 * * * *')
+        githubPush()
+    }
+
+    environment {
+        DB_URL = "${DB_URL}"
     }
 
     stages {
@@ -26,7 +30,7 @@ pipeline {
             steps {
                 dir('project/backend') {
                     sh '''
-                        chmod +x mvnw
+                        chmod u+x mvnw
                         ./mvnw clean package -DskipTests
                     '''
                 }
@@ -36,7 +40,20 @@ pipeline {
         stage('Test Backend') {
             steps {
                 dir('project/backend') {
-                    sh './mvnw test'
+                    withCredentials([
+                        usernamePassword(
+                            credentialsId: 'mysql-credentials',
+                            usernameVariable: 'DB_USER',
+                            passwordVariable: 'DB_PASSWORD'
+                        )
+                    ]) {
+                        sh '''
+                            echo "Running backend tests..."
+                            echo "Database: $DB_URL"
+
+                            ./mvnw test
+                        '''
+                    }
                 }
             }
         }
@@ -56,7 +73,6 @@ pipeline {
                 }
             }
         }
-
 
         stage('Archive') {
             steps {
