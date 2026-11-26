@@ -49,12 +49,6 @@ K8S_NAMESPACES  := monitoring database## Namespaces created by the project
 
 # --- Commands ---
 KUBECTL := sudo k3s kubectl
-
-# --- Utilities ---
-# `envirement.mk` exports everything, which would expand it without an argument
-unexport confirm
-
-# Prints RUNNING, STOPPED, or nothing if the container does not exist
 container_state = sudo lxc list '^$(CONTAINER)$$' --format csv --columns s
 
 # --- Targets ---
@@ -128,7 +122,7 @@ lxc-export: ## Export a container backup (contains secrets)
 lxc-clean: ## Delete the container and orphaned veth interfaces
 	@$(LOG_INFO) "Cleaning $(CONTAINER)..."
 	ip -o link show type veth | awk -F': ' '/state DOWN/ {split($$2, a, "@"); print a[1]}' | xargs -r -n1 sudo ip link delete
-	@if $(call confirm,Delete container $(CONTAINER)?); then \
+	@if $(call CONFIRM,Delete container $(CONTAINER)?); then \
 		sudo lxc delete -f $(CONTAINER);                       \
 	fi
 
@@ -169,6 +163,6 @@ k8s-logs: ## Follow the K3s service logs
 	sudo journalctl -u k3s -f
 
 k8s-clean: ## Delete the project namespaces and their data
-	@if $(call confirm,Delete namespaces $(K8S_NAMESPACES) and their data?); then \
+	@if $(call CONFIRM,Delete namespaces $(K8S_NAMESPACES) and their data?); then \
 		$(KUBECTL) delete namespace $(K8S_NAMESPACES) --ignore-not-found;           \
 	fi
